@@ -1,13 +1,19 @@
 import re
 import sys
+import ast
+from typing import List, Dict, Tuple
 
 class VulnerabilityDetector:
     def __init__(self):
-        self.vulnerabilities = []
-        self.array_declarations = {}
-        self.function_parameters = {}
+        self.vulnerabilities: List[Dict[str, str]] = []
+        self.array_declarations: Dict[str, int] = {}
+        self.function_parameters: Dict[str, List[str]] = {}
+        self.variable_declarations: Dict[str, str] = {}
+        self.variable_initializations: Dict[str, bool] = {}
+        self.current_function: str = ""
+        self.current_line: int = 0
 
-    def analyze_file(self, filename):
+    def analyze_file(self, filename: str) -> None:
         """
         Analyze a C/C++ file for potential vulnerabilities.
         """
@@ -16,12 +22,13 @@ class VulnerabilityDetector:
 
         self.find_function_parameters(content)
         self.find_array_declarations(content)
+        self.find_variable_declarations(content)
 
         functions = re.findall(r'(\w+)\s+(\w+)\s*\((.*?)\)\s*{(.*?)}', content, re.DOTALL)
         for func in functions:
             self.analyze_function(func)
 
-    def find_function_parameters(self, content):
+    def find_function_parameters(self, content: str) -> None:
         """
         Find all function declarations and store their parameters.
         """
@@ -29,7 +36,7 @@ class VulnerabilityDetector:
         for return_type, func_name, params in function_decls:
             self.function_parameters[func_name] = [p.strip().split()[-1] for p in params.split(',') if p.strip()]
 
-    def find_array_declarations(self, content):
+    def find_array_declarations(self, content: str) -> None:
         """
         Find all array declarations in the code and store their sizes.
         """
@@ -37,29 +44,50 @@ class VulnerabilityDetector:
         for type_, name, size in array_decls:
             self.array_declarations[name] = int(size)
 
-    def analyze_function(self, func):
+    def find_variable_declarations(self, content: str) -> None:
+        """
+        Find all variable declarations in the code.
+        """
+        var_decls = re.findall(r'\b(int|long|short|char|float|double)\s+(\w+)\s*;', content)
+        for type_, name in var_decls:
+            self.variable_declarations[name] = type_
+
+    def analyze_function(self, func: Tuple[str, str, str, str]) -> None:
         """
         Analyze a single function for potential vulnerabilities.
         """
-        func_name, params, body = func[1], func[2], func[3]
+        self.current_function = func[1]
+        body = func[3]
+        self.variable_initializations = {var: False for var in self.variable_declarations}
 
-        for param in self.function_parameters.get(func_name, []):
-            if param not in self.array_declarations:
-                self.array_declarations[param] = sys.maxsize
+        lines = body.split('\n')
+        for i, line in enumerate(lines):
+            self.current_line = i + 1
+            self.check_buffer_overflow(line)
+            self.check_format_string(line)
+            self.check_uninitialized_integer_overflow(line)
 
-        self.check_buffer_overflow(body, func_name)
-        self.check_format_string(body, func_name)
+    def add_vulnerability(self, vuln_type: str, description: str) -> None:
+        """
+        Add a vulnerability to the list with additional context.
+        """
+        self.vulnerabilities.append({
+            "type": vuln_type,
+            "function": self.current_function,
+            "line": self.current_line,
+            "description": description
+        })
 
-    def check_buffer_overflow(self, body, func_name):
+    def check_buffer_overflow(self, line: str) -> None:
         """
         Check for potential buffer overflow vulnerabilities.
         """
-        array_accesses = re.findall(r'(\w+)\s*\[([^]]+)\]', body)
+        array_accesses = re.findall(r'(\w+)\s*\[([^]]+)\]', line)
 
         for access in array_accesses:
-            self.check_array_access(access, func_name)
+            self.check_array_access(access)
 
-    def check_array_access(self, access, func_name):
+    def check_array_access(self, access: Tuple[str, str]) -> None:
         """
         Check if an array access might cause a buffer overflow.
         """
@@ -68,55 +96,69 @@ class VulnerabilityDetector:
         if array_name in self.array_declarations:
             array_size = self.array_declarations[array_name]
 
-            if index_expr.isdigit():
-                if int(index_expr) >= array_size:
-                    self.vulnerabilities.append(f"Buffer Overflow in '{func_name}': {array_name}[{index_expr}] exceeds declared size of {array_size}")
-            else:
-                self.analyze_index_expression(array_name, index_expr, array_size, func_name)
+            try:
+                index_value = ast.literal_eval(index_expr)
+                if isinstance(index_value, int) and index_value >= array_size:
+                    self.add_vulnerability("Buffer Overflow", f"{array_name}[{index_expr}] exceeds declared size of {array_size}")
+            except:
+                if '+' in index_expr or '-' in index_expr:
+                    self.add_vulnerability("Potential Buffer Overflow", f"{array_name}[{index_expr}] - arithmetic operation in index might exceed bounds")
+                elif any(var in index_expr for var in self.function_parameters.get(self.current_function, [])):
+                    self.add_vulnerability("Potential Buffer Overflow", f"{array_name}[{index_expr}] - using function parameter as index without bounds checking")
 
-    def analyze_index_expression(self, array_name, index_expr, array_size, func_name):
-        """
-        Analyze a non-constant index expression for potential overflow.
-        """
-        if '+' in index_expr or '-' in index_expr:
-            self.vulnerabilities.append(f"Potential Buffer Overflow in '{func_name}': {array_name}[{index_expr}] - arithmetic operation in index might exceed bounds")
-        elif any(var in index_expr for var in self.function_parameters.get(func_name, [])):
-            self.vulnerabilities.append(f"Potential Buffer Overflow in '{func_name}': {array_name}[{index_expr}] - using function parameter as index without bounds checking")
-        else:
-            self.vulnerabilities.append(f"Potential Buffer Overflow in '{func_name}': {array_name}[{index_expr}] - unable to determine bounds at compile time")
-
-    def check_format_string(self, body, func_name):
+    def check_format_string(self, line: str) -> None:
         """
         Check for potential format string vulnerabilities.
         """
-        # Look for printf-like function calls
-        printf_calls = re.findall(r'(printf|sprintf|fprintf|snprintf|vprintf|vsprintf|vfprintf|vsnprintf)\s*\((.*?)\)', body)
+        printf_calls = re.findall(r'(printf|sprintf|fprintf|snprintf|vprintf|vsprintf|vfprintf|vsnprintf)\s*\((.*?)\)', line)
 
         for func, args in printf_calls:
             args = [arg.strip() for arg in args.split(',')]
-            if len(args) < 2:  # Single argument printf is always safe
+            if len(args) < 2:
                 continue
 
-            format_string = args[0 if func == 'printf' else 1]  # printf(format, ...) vs fprintf(stream, format, ...)
+            format_string = args[0 if func == 'printf' else 1]
 
-            # Check if the format string is a string literal
             if not (format_string.startswith('"') and format_string.endswith('"')):
-                # If it's not a string literal, it might be user-controlled
-                self.vulnerabilities.append(f"Potential Format String Vulnerability in '{func_name}': {func}() call with non-literal format string")
+                self.add_vulnerability("Format String", f"{func}() call with non-literal format string")
 
-            # Check for mismatched format specifiers and arguments
             format_specifiers = re.findall(r'%[\d.]*[diuoxXfFeEgGaAcspn]', format_string)
             if len(format_specifiers) != len(args) - (1 if func == 'printf' else 2):
-                self.vulnerabilities.append(f"Potential Format String Vulnerability in '{func_name}': Mismatched number of format specifiers and arguments in {func}() call")
+                self.add_vulnerability("Format String", f"Mismatched number of format specifiers and arguments in {func}() call")
 
-    def report_vulnerabilities(self):
+    def check_uninitialized_integer_overflow(self, line: str) -> None:
+        """
+        Check for potential uninitialized variable and integer overflow vulnerabilities.
+        """
+        # Check for variable initializations
+        initializations = re.findall(r'(\w+)\s*=', line)
+        for var in initializations:
+            if var in self.variable_declarations:
+                self.variable_initializations[var] = True
+
+        # Check for arithmetic operations
+        arithmetic_ops = re.findall(r'(\w+)\s*([\+\-\*\/])\s*(\w+)', line)
+        for var1, op, var2 in arithmetic_ops:
+            # Check for uninitialized variables
+            if var1 in self.variable_declarations and not self.variable_initializations.get(var1, False):
+                self.add_vulnerability("Uninitialized Variable", f"Use of potentially uninitialized variable '{var1}' in arithmetic operation")
+            if var2 in self.variable_declarations and not self.variable_initializations.get(var2, False):
+                self.add_vulnerability("Uninitialized Variable", f"Use of potentially uninitialized variable '{var2}' in arithmetic operation")
+
+            # Check for potential integer overflows
+            if op in ['+', '*']:  # Focus on addition and multiplication
+                if (var1 in self.variable_declarations and self.variable_declarations[var1] in ['int', 'long']) or \
+                   (var2 in self.variable_declarations and self.variable_declarations[var2] in ['int', 'long']):
+                    self.add_vulnerability("Potential Integer Overflow", f"Arithmetic operation '{op}' involving '{var1}' and '{var2}' may cause overflow")
+
+    def report_vulnerabilities(self) -> None:
         """
         Report all found vulnerabilities.
         """
         if self.vulnerabilities:
             print("Potential vulnerabilities found:")
             for vuln in self.vulnerabilities:
-                print(f"- {vuln}")
+                print(f"- {vuln['type']} in function '{vuln['function']}' at line {vuln['line']}: {vuln['description']}")
         else:
             print("No potential vulnerabilities detected.")
 
