@@ -69,6 +69,7 @@ class VulnerabilityDetector:
             self.check_format_string(line)
             self.check_uninitialized_integer_overflow(line)
             self.check_use_after_free(line)
+            self.check_weak_credentials(line)
 
         print(f"Analyzed function: {self.current_function}")
         print(f"Allocated memory at end of function: {self.allocated_memory}")
@@ -184,6 +185,45 @@ class VulnerabilityDetector:
                 if not re.search(r'free\(' + re.escape(var_name) + r'\)', line):  # Exclude the free statement itself
                     self.add_vulnerability("Use-After-Free", f"Potential use of freed memory '{var_name}'")
                     print(f"Detected potential use after free of {var_name}")
+
+    def check_weak_credentials(self, line: str) -> None:
+        """
+        Check for potential weak or hard-coded credentials vulnerabilities.
+        """
+        # Check for hard-coded passwords
+        password_patterns = [
+            r'password\s*=\s*["\'](.*?)["\']',
+            r'passwd\s*=\s*["\'](.*?)["\']',
+            r'pwd\s*=\s*["\'](.*?)["\']',
+            r'pass\s*=\s*["\'](.*?)["\']'
+        ]
+
+        for pattern in password_patterns:
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                password = match.group(1)
+                if len(password) < 8:
+                    self.add_vulnerability("Weak Password", f"Potentially weak password: '{password}'")
+                self.add_vulnerability("Hard-coded Credential", f"Hard-coded password detected: '{password}'")
+
+        # Check for hard-coded API keys or tokens
+        api_key_patterns = [
+            r'api[_-]?key\s*=\s*["\'](.*?)["\']',
+            r'api[_-]?token\s*=\s*["\'](.*?)["\']',
+            r'secret[_-]?key\s*=\s*["\'](.*?)["\']'
+        ]
+
+        for pattern in api_key_patterns:
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                api_key = match.group(1)
+                self.add_vulnerability("Hard-coded Credential", f"Hard-coded API key or token detected: '{api_key}'")
+
+        # Check for common default passwords
+        default_passwords = ['admin', 'password', '123456', 'qwerty', 'letmein']
+        for default_pwd in default_passwords:
+            if default_pwd in line.lower():
+                self.add_vulnerability("Weak Password", f"Potentially weak default password detected: '{default_pwd}'")
 
     def report_vulnerabilities(self) -> None:
         """
