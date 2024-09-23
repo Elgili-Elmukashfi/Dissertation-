@@ -12,6 +12,7 @@ class VulnerabilityDetector:
         self.variable_initializations: Dict[str, bool] = {}
         self.current_function: str = ""
         self.current_line: int = 0
+        self.allocated_memory: Dict[str, str] = {}  # Track allocated memory
 
     def analyze_file(self, filename: str) -> None:
         """
@@ -59,6 +60,7 @@ class VulnerabilityDetector:
         self.current_function = func[1]
         body = func[3]
         self.variable_initializations = {var: False for var in self.variable_declarations}
+        self.allocated_memory.clear()  # Reset allocated memory for each function
 
         lines = body.split('\n')
         for i, line in enumerate(lines):
@@ -66,6 +68,10 @@ class VulnerabilityDetector:
             self.check_buffer_overflow(line)
             self.check_format_string(line)
             self.check_uninitialized_integer_overflow(line)
+            self.check_use_after_free(line)
+
+        print(f"Analyzed function: {self.current_function}")
+        print(f"Allocated memory at end of function: {self.allocated_memory}")
 
     def add_vulnerability(self, vuln_type: str, description: str) -> None:
         """
@@ -151,6 +157,34 @@ class VulnerabilityDetector:
                    (var2 in self.variable_declarations and self.variable_declarations[var2] in ['int', 'long']):
                     self.add_vulnerability("Potential Integer Overflow", f"Arithmetic operation '{op}' involving '{var1}' and '{var2}' may cause overflow")
 
+    def check_use_after_free(self, line: str) -> None:
+        """
+        Check for potential Use-After-Free vulnerabilities.
+        """
+        print(f"Analyzing line {self.current_line}: {line.strip()}")
+
+        # Check for memory allocation
+        malloc_match = re.search(r'(\w+)\s*=\s*(?:malloc|calloc|realloc)\(', line)
+        if malloc_match:
+            var_name = malloc_match.group(1)
+            self.allocated_memory[var_name] = "allocated"
+            print(f"Detected allocation of {var_name}")
+
+        # Check for memory deallocation
+        free_match = re.search(r'free\((\w+)\)', line)
+        if free_match:
+            var_name = free_match.group(1)
+            if var_name in self.allocated_memory:
+                self.allocated_memory[var_name] = "freed"
+                print(f"Detected freeing of {var_name}")
+
+        # Check for use of potentially freed memory
+        for var_name, status in self.allocated_memory.items():
+            if status == "freed" and re.search(r'\b' + re.escape(var_name) + r'\b', line):
+                if not re.search(r'free\(' + re.escape(var_name) + r'\)', line):  # Exclude the free statement itself
+                    self.add_vulnerability("Use-After-Free", f"Potential use of freed memory '{var_name}'")
+                    print(f"Detected potential use after free of {var_name}")
+
     def report_vulnerabilities(self) -> None:
         """
         Report all found vulnerabilities.
@@ -162,13 +196,15 @@ class VulnerabilityDetector:
         else:
             print("No potential vulnerabilities detected.")
 
-# Usage example
-if __name__ == "__main__":
+def main():
     if len(sys.argv) != 2:
-        print("Usage: python vulnerability_detector.py <filename>")
+        print("Usage: python vulns_detector.py <filename>")
         sys.exit(1)
 
     filename = sys.argv[1]
     detector = VulnerabilityDetector()
     detector.analyze_file(filename)
     detector.report_vulnerabilities()
+
+if __name__ == "__main__":
+    main()
