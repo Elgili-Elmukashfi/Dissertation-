@@ -5,6 +5,7 @@ from typing import List, Dict, Tuple
 
 class VulnerabilityDetector:
     def __init__(self):
+        # Initialize data structures to store vulnerability information
         self.vulnerabilities: List[Dict[str, str]] = []
         self.array_declarations: Dict[str, int] = {}
         self.function_parameters: Dict[str, List[str]] = {}
@@ -18,13 +19,16 @@ class VulnerabilityDetector:
         """
         Analyze a C/C++ file for potential vulnerabilities.
         """
+        # Read the entire file content
         with open(filename, 'r') as file:
             content = file.read()
 
+        # Perform initial analysis to gather information about the code structure
         self.find_function_parameters(content)
         self.find_array_declarations(content)
         self.find_variable_declarations(content)
 
+        # Find all function definitions and analyze each function
         functions = re.findall(r'(\w+)\s+(\w+)\s*\((.*?)\)\s*{(.*?)}', content, re.DOTALL)
         for func in functions:
             self.analyze_function(func)
@@ -59,9 +63,11 @@ class VulnerabilityDetector:
         """
         self.current_function = func[1]
         body = func[3]
+        # Reset variable initializations for each function
         self.variable_initializations = {var: False for var in self.variable_declarations}
         self.allocated_memory.clear()  # Reset allocated memory for each function
 
+        # Analyze each line of the function
         lines = body.split('\n')
         for i, line in enumerate(lines):
             self.current_line = i + 1
@@ -89,6 +95,7 @@ class VulnerabilityDetector:
         """
         Check for potential buffer overflow vulnerabilities.
         """
+        # Find all array accesses in the line
         array_accesses = re.findall(r'(\w+)\s*\[([^]]+)\]', line)
 
         for access in array_accesses:
@@ -104,10 +111,12 @@ class VulnerabilityDetector:
             array_size = self.array_declarations[array_name]
 
             try:
+                # Try to evaluate the index expression
                 index_value = ast.literal_eval(index_expr)
                 if isinstance(index_value, int) and index_value >= array_size:
                     self.add_vulnerability("Buffer Overflow", f"{array_name}[{index_expr}] exceeds declared size of {array_size}")
             except:
+                # If evaluation fails, check for potential issues
                 if '+' in index_expr or '-' in index_expr:
                     self.add_vulnerability("Potential Buffer Overflow", f"{array_name}[{index_expr}] - arithmetic operation in index might exceed bounds")
                 elif any(var in index_expr for var in self.function_parameters.get(self.current_function, [])):
@@ -117,6 +126,7 @@ class VulnerabilityDetector:
         """
         Check for potential format string vulnerabilities.
         """
+        # Find all printf-like function calls
         printf_calls = re.findall(r'(printf|sprintf|fprintf|snprintf|vprintf|vsprintf|vfprintf|vsnprintf)\s*\((.*?)\)', line)
 
         for func, args in printf_calls:
@@ -126,9 +136,11 @@ class VulnerabilityDetector:
 
             format_string = args[0 if func == 'printf' else 1]
 
+            # Check if format string is a literal string
             if not (format_string.startswith('"') and format_string.endswith('"')):
                 self.add_vulnerability("Format String", f"{func}() call with non-literal format string")
 
+            # Check if number of format specifiers matches number of arguments
             format_specifiers = re.findall(r'%[\d.]*[diuoxXfFeEgGaAcspn]', format_string)
             if len(format_specifiers) != len(args) - (1 if func == 'printf' else 2):
                 self.add_vulnerability("Format String", f"Mismatched number of format specifiers and arguments in {func}() call")
